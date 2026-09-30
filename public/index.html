@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iUsed | تسعير الموبايلات</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f5f7;color:#161616;font-family:Arial,Tahoma,sans-serif}
+header{background:#111;color:#fff;padding:18px 16px;position:sticky;top:0;z-index:5}.wrap{max-width:980px;margin:auto}
+.logo{font-size:30px;font-weight:900}.logo i{color:#f2b400;font-style:normal}.sub{font-size:13px;opacity:.7;margin-top:4px}
+main{padding:16px}.tools{display:flex;gap:9px;flex-wrap:wrap;margin:8px 0 14px}
+input,select,button{font:inherit;border:1px solid #ddd;border-radius:11px;padding:11px 12px;background:#fff}
+#q{flex:1;min-width:220px}button{cursor:pointer;font-weight:700}.gold{background:#f2b400;border-color:#f2b400}
+.stats{display:flex;gap:10px;margin-bottom:12px}.stat{background:#fff;border-radius:12px;padding:11px 14px;flex:1;box-shadow:0 2px 8px #00000008}
+.card{background:#fff;border-radius:14px;padding:13px;margin:8px 0;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px #00000008}
+.n{width:36px;height:36px;border-radius:50%;background:#111;color:#fff;display:grid;place-items:center;font-size:12px}
+.info{flex:1}.name{font-weight:800}.brand{font-size:12px;color:#777;margin-top:4px}.price{font-size:18px;font-weight:900;white-space:nowrap}
+.actions{display:none;gap:6px}.admin .actions{display:flex}.edit{width:105px;padding:8px}
+.danger{background:#fff;border-color:#e3caca}.empty{text-align:center;padding:35px;color:#777}
+.modal{display:none;position:fixed;inset:0;background:#0008;z-index:20;align-items:center;justify-content:center}.modal.show{display:flex}
+.box{background:#fff;width:min(390px,92%);padding:20px;border-radius:16px}.box h3{margin-top:0}
+.box input{width:100%;margin-bottom:9px}.full{width:100%;margin-top:7px}.dark{background:#111;color:#fff;border-color:#111}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 15px;border-radius:10px;display:none;z-index:30}
+@media(max-width:620px){.card{align-items:flex-start}.price{font-size:16px}.actions{flex-wrap:wrap;justify-content:flex-end}.stats{font-size:13px}}
+</style>
+</head>
+<body>
+<header><div class="wrap"><div class="logo">i<i>Used</i></div><div class="sub">نظام تسعير الموبايلات</div></div></header>
+<main class="wrap">
+<div class="tools">
+<input id="q" placeholder="ابحث باسم الموبايل..." oninput="load()">
+<select id="brand" onchange="load()"><option value="">كل الشركات</option></select>
+<button class="gold" id="loginBtn" onclick="openLogin()">🔐 المدير</button>
+<button id="addBtn" style="display:none" onclick="openAdd()">＋ إضافة موديل</button>
+<button id="logoutBtn" style="display:none" onclick="logout()">خروج</button>
+</div>
+<div class="stats"><div class="stat">عدد النتائج: <b id="count">0</b></div><div class="stat">الحالة: <b id="status">عرض فقط</b></div></div>
+<section id="list"></section>
+</main>
+
+<div class="modal" id="loginModal"><div class="box">
+<h3>دخول المدير</h3><input id="password" type="password" placeholder="الرقم السري">
+<button class="dark full" onclick="login()">دخول</button><button class="full" onclick="closeModal('loginModal')">إلغاء</button>
+</div></div>
+
+<div class="modal" id="addModal"><div class="box">
+<h3>إضافة موديل</h3><input id="newBrand" placeholder="الشركة"><input id="newName" placeholder="اسم الموديل والسعة"><input id="newPrice" type="number" placeholder="السعر بالجنيه">
+<button class="dark full" onclick="addModel()">إضافة</button><button class="full" onclick="closeModal('addModal')">إلغاء</button>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+let admin=false;
+const $=id=>document.getElementById(id);
+const money=n=>new Intl.NumberFormat("ar-EG").format(n)+" ج.م";
+function toast(s){$("toast").textContent=s;$("toast").style.display="block";setTimeout(()=>$("toast").style.display="none",1800)}
+async function api(url,opt={}){const r=await fetch(url,{headers:{"Content-Type":"application/json"},...opt});if(!r.ok){let e={};try{e=await r.json()}catch{};throw Error(e.error||"حدث خطأ")}return r.json()}
+async function loadBrands(){const bs=await api("/api/brands");$("brand").innerHTML='<option value="">كل الشركات</option>'+bs.map(b=>`<option>${b}</option>`).join("")}
+async function load(){
+ const q=$("q").value, brand=$("brand").value;
+ const rows=await api("/api/models?"+new URLSearchParams({q,brand}));
+ $("count").textContent=rows.length;
+ $("list").innerHTML=rows.length?rows.map(x=>`
+ <div class="card">
+  <div class="n">${x.id}</div><div class="info"><div class="name">${x.name}</div><div class="brand">${x.brand}</div></div>
+  <div class="price">${money(x.price)}</div>
+  <div class="actions">
+   <input class="edit" id="p${x.id}" type="number" value="${x.price}">
+   <button class="dark" onclick="save(${x.id})">حفظ</button>
+   <button class="danger" onclick="removeModel(${x.id})">حذف</button>
+  </div>
+ </div>`).join(""):'<div class="empty">لا توجد نتائج</div>';
+}
+async function check(){const m=await api("/api/me");admin=m.admin;document.body.classList.toggle("admin",admin);$("loginBtn").style.display=admin?"none":"inline-block";$("addBtn").style.display=admin?"inline-block":"none";$("logoutBtn").style.display=admin?"inline-block":"none";$("status").textContent=admin?"وضع المدير":"عرض فقط";load()}
+function openLogin(){$("loginModal").classList.add("show");$("password").focus()}
+function closeModal(id){$(id).classList.remove("show")}
+async function login(){try{await api("/api/login",{method:"POST",body:JSON.stringify({password:$("password").value})});closeModal("loginModal");$("password").value="";toast("تم دخول المدير");await check()}catch(e){toast(e.message)}}
+async function logout(){await api("/api/logout",{method:"POST"});await check();toast("تم تسجيل الخروج")}
+function openAdd(){$("addModal").classList.add("show")}
+async function addModel(){
+ try{await api("/api/models",{method:"POST",body:JSON.stringify({brand:$("newBrand").value,name:$("newName").value,price:Number($("newPrice").value)})});
+ ["newBrand","newName","newPrice"].forEach(id=>$(id).value="");closeModal("addModal");await loadBrands();await load();toast("تمت إضافة الموديل")
+ }catch(e){toast(e.message)}
+}
+async function save(id){try{await api("/api/models/"+id,{method:"PUT",body:JSON.stringify({price:Number($("p"+id).value)})});await load();toast("تم حفظ السعر")}catch(e){toast(e.message)}}
+async function removeModel(id){if(!confirm("حذف هذا الموديل؟"))return;try{await api("/api/models/"+id,{method:"DELETE"});await loadBrands();await load();toast("تم الحذف")}catch(e){toast(e.message)}}
+loadBrands().then(check);
+</script>
+</body>
+</html>
