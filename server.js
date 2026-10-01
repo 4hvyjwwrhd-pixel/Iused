@@ -24,207 +24,107 @@ CREATE TABLE IF NOT EXISTS models (
   ram TEXT NOT NULL DEFAULT '',
   price INTEGER NOT NULL,
   type TEXT NOT NULL DEFAULT 'used',
+  available INTEGER NOT NULL DEFAULT 1,
+  sold_at TEXT DEFAULT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 `);
 
-/*
-  تحديث قاعدة البيانات القديمة تلقائياً
-  بدون حذف أي أجهزة موجودة
-*/
+/* تحديث قواعد البيانات القديمة بدون حذف البيانات */
 
-const columns = db.prepare("PRAGMA table_info(models)").all();
+let columns = db.prepare("PRAGMA table_info(models)").all();
 
-if (!columns.some(c => c.name === "type")) {
-  db.exec(`
-    ALTER TABLE models
-    ADD COLUMN type TEXT NOT NULL DEFAULT 'used'
-  `);
+function addColumn(name, sql) {
+  if (!columns.some(c => c.name === name)) {
+    db.exec(sql);
+    columns = db.prepare("PRAGMA table_info(models)").all();
+  }
 }
 
-if (!columns.some(c => c.name === "storage")) {
-  db.exec(`
-    ALTER TABLE models
-    ADD COLUMN storage TEXT NOT NULL DEFAULT ''
-  `);
-}
+addColumn(
+  "type",
+  `ALTER TABLE models ADD COLUMN type TEXT NOT NULL DEFAULT 'used'`
+);
 
-if (!columns.some(c => c.name === "ram")) {
-  db.exec(`
-    ALTER TABLE models
-    ADD COLUMN ram TEXT NOT NULL DEFAULT ''
-  `);
-}
+addColumn(
+  "storage",
+  `ALTER TABLE models ADD COLUMN storage TEXT NOT NULL DEFAULT ''`
+);
+
+addColumn(
+  "ram",
+  `ALTER TABLE models ADD COLUMN ram TEXT NOT NULL DEFAULT ''`
+);
+
+addColumn(
+  "available",
+  `ALTER TABLE models ADD COLUMN available INTEGER NOT NULL DEFAULT 1`
+);
+
+addColumn(
+  "sold_at",
+  `ALTER TABLE models ADD COLUMN sold_at TEXT DEFAULT NULL`
+);
+
+addColumn(
+  "updated_at",
+  `ALTER TABLE models ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP`
+);
 
 /* =========================
-   INITIAL DATA
+   NORMALIZATION
 ========================= */
 
-const count = db.prepare(
-  "SELECT COUNT(*) AS c FROM models"
-).get().c;
+function normalizeText(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/سامسونج/g, "samsung")
+    .replace(/جالاكسي/g, "galaxy")
+    .replace(/\bgalaxy\b/g, "")
+    .replace(/\bsamsung\b/g, "")
+    .replace(/[\s\-_.]+/g, "")
+    .replace(/[^a-z0-9\u0600-\u06FF]/g, "");
+}
 
-if (count === 0) {
+function normalizeSpec(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/gb/g, "")
+    .replace(/tb/g, "000")
+    .replace(/\s/g, "")
+    .trim();
+}
 
-  const seed = db.prepare(`
-    INSERT INTO models
-    (brand,name,storage,ram,price,type)
-    VALUES (?,?,?,?,?,?)
-  `);
-
-  const seedMany = db.transaction(rows => {
-
-    for (const x of rows) {
-
-      seed.run(
-        x.brand,
-        x.name,
-        "",
-        "",
-        x.price,
-        "used"
-      );
-
-    }
-
-  });
-
-  const initial = [
-    {brand:"Xiaomi",name:"Redmi Note 15 256/8",price:13900},
-    {brand:"Xiaomi",name:"Redmi Note 15 5G 256/8",price:15500},
-    {brand:"Xiaomi",name:"Redmi 15C 256/8",price:9700},
-    {brand:"Xiaomi",name:"Redmi 15 256/8 ضمان شواحن زيرو",price:9850},
-    {brand:"Xiaomi",name:"Redmi Note 14 Pro 256/8",price:15500},
-    {brand:"Xiaomi",name:"Redmi Note 14 Pro 512/12",price:17500},
-    {brand:"Xiaomi",name:"Redmi Note 13 128/8",price:10700},
-    {brand:"Xiaomi",name:"Redmi 14C 128/4",price:7300},
-    {brand:"Xiaomi",name:"Redmi Note 14 Pro Plus 256/12",price:21000},
-
-    {brand:"Honor",name:"Honor X7d 4G 256/8",price:11900},
-
-    {brand:"Realme",name:"Realme C75 256/8",price:11000},
-
-    {brand:"Oppo",name:"Reno 15F 5G 256/12",price:23300},
-    {brand:"Oppo",name:"Oppo A6 256/8",price:14200},
-    {brand:"Oppo",name:"Reno 14F 5G 256/12",price:21500},
-    {brand:"Oppo",name:"Oppo A5 256/8",price:11500},
-    {brand:"Oppo",name:"Oppo A5 128/6",price:10200},
-
-    {brand:"Vivo",name:"Vivo Y31 128/8",price:11900},
-    {brand:"Vivo",name:"Vivo Y31D 256/8",price:12900},
-
-    {brand:"Xiaomi",name:"Redmi Note 13 128/8 ضمان شواحن زيرو",price:8800},
-
-    {brand:"Honor",name:"Honor 200 256/12",price:18900},
-    {brand:"Honor",name:"Honor 200 Pro 512/12",price:25000},
-
-    {brand:"Samsung",name:"Samsung A35 5G 256/8",price:15500},
-    {brand:"Samsung",name:"Samsung A26 5G 256/8",price:14900},
-    {brand:"Samsung",name:"Samsung A55 5G 256/8",price:17500},
-    {brand:"Samsung",name:"Samsung A57 256/12",price:25800},
-
-    {brand:"Vivo",name:"Vivo V60 Lite 5G 256/8",price:16500},
-    {brand:"Vivo",name:"Vivo Y21D 128/4",price:8600},
-    {brand:"Vivo",name:"Vivo Y21D 256/6",price:10300},
-
-    {brand:"Samsung",name:"Samsung A3 128/6",price:8200},
-
-    {brand:"Honor",name:"Honor 400 Lite 5G 256/8",price:17500},
-
-    {brand:"Xiaomi",name:"Redmi Note 15 Pro 256/12 ضمان خط عربي ضريبة",price:14500},
-    {brand:"Xiaomi",name:"Redmi Note 15 Pro 512/12 خط",price:22000},
-    {brand:"Xiaomi",name:"Xiaomi Pad Pro 5G 256/8",price:16500},
-    {brand:"Xiaomi",name:"Xiaomi Pad 7 256/8",price:17500},
-    {brand:"Xiaomi",name:"Redmi Note 13 Pro 256/8 ضمان شواحن زيرو",price:13650},
-
-    {brand:"Honor",name:"Honor Pad 128/8",price:9900},
-
-    {brand:"Samsung",name:"Samsung Pad 128/8",price:8400},
-
-    {brand:"Vivo",name:"Vivo Y21D 128/6",price:9500},
-    {brand:"Vivo",name:"Vivo Y31D 128/8",price:11800},
-    {brand:"Vivo",name:"Vivo Y31D 256/8",price:13000},
-    {brand:"Vivo",name:"Vivo Y11D 128/4",price:8450},
-    {brand:"Vivo",name:"Vivo Y500 256/8",price:16700},
-
-    {brand:"Oppo",name:"Oppo A6X 128/4",price:9450},
-
-    {brand:"Xiaomi",name:"Redmi 15 256/8",price:11000},
-    {brand:"Xiaomi",name:"Redmi Note 15 Pro 256/12",price:18500},
-
-    {brand:"Samsung",name:"Samsung A5 128/4",price:7100},
-    {brand:"Samsung",name:"Samsung A5 64/4",price:6300},
-
-    {brand:"Xiaomi",name:"Redmi Note 60X 128/4",price:7200},
-    {brand:"Xiaomi",name:"Redmi Note 60X 64/3",price:6100},
-
-    {brand:"Realme",name:"Realme C71 128/4",price:8400},
-    {brand:"Realme",name:"Realme C71 128/6",price:9000},
-    {brand:"Realme",name:"Realme C71 256/4",price:9400},
-    {brand:"Realme",name:"Realme C85 256/8",price:12400},
-    {brand:"Realme",name:"Realme C85 Pro 256/8",price:13600},
-    {brand:"Realme",name:"Realme X6C 256/6",price:9650},
-
-    {brand:"Honor",name:"Honor 400 256/12",price:21500},
-
-    {brand:"Oppo",name:"Reno 15 5G 512/12",price:28800},
-    {brand:"Oppo",name:"Reno 15F 5G 256/12",price:23300},
-    {brand:"Oppo",name:"Reno 15F 5G 256/8",price:21200},
-
-    {brand:"Realme",name:"Realme C53 128/6",price:6400},
-
-    {brand:"Xiaomi",name:"Redmi Note 14 256/8",price:10850},
-    {brand:"Xiaomi",name:"Redmi 14C 256/8",price:8200},
-    {brand:"Xiaomi",name:"Redmi 13C 128/4",price:6350},
-    {brand:"Xiaomi",name:"Redmi Hot 60 5G 128/12",price:8200},
-
-    {brand:"Samsung",name:"Samsung A36 5G 128/8",price:16800},
-    {brand:"Samsung",name:"Samsung A16 128/6",price:8500},
-    {brand:"Samsung",name:"Samsung A17 256/8",price:13850},
-    {brand:"Samsung",name:"Samsung Smart 10 64/4",price:5700},
-    {brand:"Samsung",name:"Samsung Smart 10 256/4",price:7800},
-
-    {brand:"Vivo",name:"Vivo Y18 128/6",price:7450},
-
-    {brand:"Realme",name:"Realme 16 Pro 256/12",price:22900},
-
-    {brand:"Xiaomi",name:"Redmi 17 256/4",price:10500},
-
-    {brand:"OnePlus",name:"OnePlus P1 Pro 256/12",price:14500}
-  ];
-
-  seedMany(initial);
+function modelKey(brand, name, storage, ram, type) {
+  return [
+    normalizeText(brand),
+    normalizeText(name),
+    normalizeSpec(storage),
+    normalizeSpec(ram),
+    type
+  ].join("|");
 }
 
 /* =========================
    EXPRESS
 ========================= */
 
-app.use(express.json());
-
-app.use(
-  express.urlencoded({
-    extended:true
-  })
-);
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 app.use(
   session({
-
-    secret:SESSION_SECRET,
-
-    resave:false,
-
-    saveUninitialized:false,
-
-    cookie:{
-      httpOnly:true,
-      sameSite:"lax",
-      secure:false,
-      maxAge:8*60*60*1000
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false,
+      maxAge: 8 * 60 * 60 * 1000
     }
-
   })
 );
 
@@ -232,54 +132,41 @@ app.use(
    ADMIN
 ========================= */
 
-function requireAdmin(req,res,next){
-
-  if(!req.session.admin){
-
+function requireAdmin(req, res, next) {
+  if (!req.session.admin) {
     return res.status(401).json({
-      error:"غير مصرح"
+      error: "غير مصرح"
     });
-
   }
 
   next();
-
 }
 
 /* =========================
    MODELS SEARCH
 ========================= */
 
-app.get("/api/models",(req,res)=>{
+app.get("/api/models", (req, res) => {
 
-  const q=
-    (req.query.q||"").trim();
+  const q = (req.query.q || "").trim();
+  const brand = (req.query.brand || "").trim();
+  const type = (req.query.type || "").trim();
+  const storage = (req.query.storage || "").trim();
+  const ram = (req.query.ram || "").trim();
 
-  const brand=
-    (req.query.brand||"").trim();
-
-  const type=
-    (req.query.type||"").trim();
-
-  const storage=
-    (req.query.storage||"").trim();
-
-  const ram=
-    (req.query.ram||"").trim();
-
-  const minPrice=
+  const minPrice =
     req.query.minPrice !== undefined &&
     req.query.minPrice !== ""
       ? Number(req.query.minPrice)
       : null;
 
-  const maxPrice=
+  const maxPrice =
     req.query.maxPrice !== undefined &&
     req.query.maxPrice !== ""
       ? Number(req.query.maxPrice)
       : null;
 
-  let sql=`
+  let sql = `
     SELECT
       id,
       brand,
@@ -287,15 +174,18 @@ app.get("/api/models",(req,res)=>{
       storage,
       ram,
       price,
-      type
+      type,
+      available,
+      sold_at,
+      created_at,
+      updated_at
     FROM models
   `;
 
-  const where=[];
-  const params=[];
+  const where = [];
+  const params = [];
 
-  if(q){
-
+  if (q) {
     where.push(`
       (
         lower(name) LIKE lower(?)
@@ -303,257 +193,387 @@ app.get("/api/models",(req,res)=>{
       )
     `);
 
-    params.push(
-      `%${q}%`,
-      `%${q}%`
-    );
-
+    params.push(`%${q}%`, `%${q}%`);
   }
 
-  if(brand){
-
+  if (brand) {
     where.push("brand=?");
     params.push(brand);
-
   }
 
-  if(type==="used" || type==="new"){
-
+  if (type === "used" || type === "new") {
     where.push("type=?");
     params.push(type);
-
   }
 
-  if(storage){
-
+  if (storage) {
     where.push("storage=?");
     params.push(storage);
-
   }
 
-  if(ram){
-
+  if (ram) {
     where.push("ram=?");
     params.push(ram);
-
   }
 
-  if(Number.isFinite(minPrice)){
-
+  if (Number.isFinite(minPrice)) {
     where.push("price>=?");
     params.push(minPrice);
-
   }
 
-  if(Number.isFinite(maxPrice)){
-
+  if (Number.isFinite(maxPrice)) {
     where.push("price<=?");
     params.push(maxPrice);
-
   }
 
-  if(where.length){
-
-    sql +=
-      " WHERE " +
-      where.join(" AND ");
-
+  if (where.length) {
+    sql += " WHERE " + where.join(" AND ");
   }
 
-  sql +=
-    " ORDER BY price ASC, id ASC";
+  sql += `
+    ORDER BY
+      CASE WHEN type='used' AND available=0 THEN 1 ELSE 0 END,
+      price ASC,
+      id ASC
+  `;
 
-  res.json(
-    db.prepare(sql).all(...params)
-  );
-
+  res.json(db.prepare(sql).all(...params));
 });
 
 /* =========================
    FILTER DATA
 ========================= */
 
-app.get("/api/brands",(req,res)=>{
+app.get("/api/brands", (req, res) => {
+  const rows = db.prepare(`
+    SELECT DISTINCT brand
+    FROM models
+    ORDER BY brand
+  `).all();
 
-  const rows=
-    db.prepare(`
-      SELECT DISTINCT brand
-      FROM models
-      ORDER BY brand
-    `).all();
-
-  res.json(
-    rows.map(x=>x.brand)
-  );
-
+  res.json(rows.map(x => x.brand));
 });
 
+app.get("/api/storages", (req, res) => {
+  const rows = db.prepare(`
+    SELECT DISTINCT storage
+    FROM models
+    WHERE storage <> ''
+    ORDER BY CAST(storage AS INTEGER)
+  `).all();
 
-app.get("/api/storages",(req,res)=>{
-
-  const rows=
-    db.prepare(`
-      SELECT DISTINCT storage
-      FROM models
-      WHERE storage <> ''
-      ORDER BY
-      CAST(storage AS INTEGER)
-    `).all();
-
-  res.json(
-    rows.map(x=>x.storage)
-  );
-
+  res.json(rows.map(x => x.storage));
 });
 
+app.get("/api/rams", (req, res) => {
+  const rows = db.prepare(`
+    SELECT DISTINCT ram
+    FROM models
+    WHERE ram <> ''
+    ORDER BY CAST(ram AS INTEGER)
+  `).all();
 
-app.get("/api/rams",(req,res)=>{
-
-  const rows=
-    db.prepare(`
-      SELECT DISTINCT ram
-      FROM models
-      WHERE ram <> ''
-      ORDER BY
-      CAST(ram AS INTEGER)
-    `).all();
-
-  res.json(
-    rows.map(x=>x.ram)
-  );
-
+  res.json(rows.map(x => x.ram));
 });
 
 /* =========================
    LOGIN
 ========================= */
 
-app.post("/api/login",(req,res)=>{
+app.post("/api/login", (req, res) => {
 
-  if(
-    req.body.password ===
-    ADMIN_PASSWORD
-  ){
-
-    req.session.admin=true;
+  if (req.body.password === ADMIN_PASSWORD) {
+    req.session.admin = true;
 
     return res.json({
-      ok:true
+      ok: true
     });
-
   }
 
   res.status(401).json({
-    error:"الرقم السري غير صحيح"
+    error: "الرقم السري غير صحيح"
   });
-
 });
 
-
-app.post("/api/logout",(req,res)=>{
-
-  req.session.destroy(()=>{
-
-    res.json({
-      ok:true
-    });
-
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.json({ ok: true });
   });
-
 });
 
-
-app.get("/api/me",(req,res)=>{
-
+app.get("/api/me", (req, res) => {
   res.json({
-    admin:!!req.session.admin
+    admin: !!req.session.admin
   });
-
 });
 
 /* =========================
-   ADD MODEL
+   ADD ONE MODEL
 ========================= */
 
 app.post(
   "/api/models",
   requireAdmin,
-  (req,res)=>{
+  (req, res) => {
 
-    const brand=
-      (req.body.brand||"").trim();
+    const brand = (req.body.brand || "").trim();
+    const name = (req.body.name || "").trim();
+    const storage = (req.body.storage || "").trim();
+    const ram = (req.body.ram || "").trim();
+    const price = Number(req.body.price);
 
-    const name=
-      (req.body.name||"").trim();
-
-    const storage=
-      (req.body.storage||"").trim();
-
-    const ram=
-      (req.body.ram||"").trim();
-
-    const price=
-      Number(req.body.price);
-
-    const type=
-      req.body.type==="new"
+    const type =
+      req.body.type === "new"
         ? "new"
         : "used";
 
-    if(
+    if (
       !brand ||
       !name ||
       !storage ||
       !ram ||
       !Number.isFinite(price) ||
-      price<=0
-    ){
-
+      price <= 0
+    ) {
       return res.status(400).json({
-        error:"أكمل بيانات الجهاز"
+        error: "أكمل بيانات الجهاز"
       });
-
     }
 
-    const r=
+    const wantedKey =
+      modelKey(brand, name, storage, ram, type);
+
+    const existing =
       db.prepare(`
-        INSERT INTO models
-        (
-          brand,
-          name,
-          storage,
-          ram,
-          price,
-          type
-        )
-        VALUES
-        (?,?,?,?,?,?)
+        SELECT *
+        FROM models
+        WHERE type=?
+      `).all(type)
+      .find(x =>
+        modelKey(
+          x.brand,
+          x.name,
+          x.storage,
+          x.ram,
+          x.type
+        ) === wantedKey
+      );
+
+    if (existing) {
+
+      db.prepare(`
+        UPDATE models
+        SET
+          brand=?,
+          name=?,
+          storage=?,
+          ram=?,
+          price=?,
+          available=1,
+          sold_at=NULL,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
       `).run(
         brand,
         name,
         storage,
         ram,
         price,
-        type
+        existing.id
       );
 
-    res.json(
-      db.prepare(`
-        SELECT
-          id,
-          brand,
-          name,
-          storage,
-          ram,
-          price,
-          type
-        FROM models
-        WHERE id=?
-      `).get(
-        r.lastInsertRowid
+      return res.json({
+        updated: true,
+        model: db.prepare(`
+          SELECT *
+          FROM models
+          WHERE id=?
+        `).get(existing.id)
+      });
+    }
+
+    const r = db.prepare(`
+      INSERT INTO models
+      (
+        brand,
+        name,
+        storage,
+        ram,
+        price,
+        type,
+        available
       )
+      VALUES (?,?,?,?,?,?,1)
+    `).run(
+      brand,
+      name,
+      storage,
+      ram,
+      price,
+      type
     );
 
+    res.json({
+      added: true,
+      model: db.prepare(`
+        SELECT *
+        FROM models
+        WHERE id=?
+      `).get(r.lastInsertRowid)
+    });
+  }
+);
+
+/* =========================
+   BULK PRICE LIST
+========================= */
+
+app.post(
+  "/api/models/bulk",
+  requireAdmin,
+  (req, res) => {
+
+    const rows =
+      Array.isArray(req.body.models)
+        ? req.body.models
+        : [];
+
+    if (!rows.length) {
+      return res.status(400).json({
+        error: "قائمة الأسعار فارغة"
+      });
+    }
+
+    let added = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    const transaction =
+      db.transaction(items => {
+
+        for (const item of items) {
+
+          const brand =
+            String(item.brand || "").trim();
+
+          const name =
+            String(item.name || "").trim();
+
+          const storage =
+            String(item.storage || "").trim();
+
+          const ram =
+            String(item.ram || "").trim();
+
+          const price =
+            Number(item.price);
+
+          const type =
+            item.type === "used"
+              ? "used"
+              : "new";
+
+          if (
+            !brand ||
+            !name ||
+            !storage ||
+            !ram ||
+            !Number.isFinite(price) ||
+            price <= 0
+          ) {
+            skipped++;
+            continue;
+          }
+
+          const wantedKey =
+            modelKey(
+              brand,
+              name,
+              storage,
+              ram,
+              type
+            );
+
+          const possible =
+            db.prepare(`
+              SELECT *
+              FROM models
+              WHERE type=?
+            `).all(type);
+
+          const existing =
+            possible.find(x =>
+              modelKey(
+                x.brand,
+                x.name,
+                x.storage,
+                x.ram,
+                x.type
+              ) === wantedKey
+            );
+
+          if (existing) {
+
+            db.prepare(`
+              UPDATE models
+              SET
+                brand=?,
+                name=?,
+                storage=?,
+                ram=?,
+                price=?,
+                available=1,
+                sold_at=NULL,
+                updated_at=CURRENT_TIMESTAMP
+              WHERE id=?
+            `).run(
+              brand,
+              name,
+              storage,
+              ram,
+              price,
+              existing.id
+            );
+
+            updated++;
+
+          } else {
+
+            db.prepare(`
+              INSERT INTO models
+              (
+                brand,
+                name,
+                storage,
+                ram,
+                price,
+                type,
+                available
+              )
+              VALUES (?,?,?,?,?,?,1)
+            `).run(
+              brand,
+              name,
+              storage,
+              ram,
+              price,
+              type
+            );
+
+            added++;
+          }
+        }
+      });
+
+    transaction(rows);
+
+    res.json({
+      ok: true,
+      added,
+      updated,
+      skipped,
+      total: rows.length
+    });
   }
 );
 
@@ -564,61 +584,142 @@ app.post(
 app.put(
   "/api/models/:id",
   requireAdmin,
-  (req,res)=>{
+  (req, res) => {
 
-    const id=
-      Number(req.params.id);
+    const id = Number(req.params.id);
+    const price = Number(req.body.price);
 
-    const price=
-      Number(req.body.price);
-
-    if(
+    if (
       !Number.isInteger(id) ||
       !Number.isFinite(price) ||
-      price<=0
-    ){
-
+      price <= 0
+    ) {
       return res.status(400).json({
-        error:"السعر غير صحيح"
+        error: "السعر غير صحيح"
       });
-
     }
 
-    const r=
-      db.prepare(`
-        UPDATE models
-        SET
-          price=?,
-          updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
-      `).run(
-        price,
-        id
-      );
+    const r = db.prepare(`
+      UPDATE models
+      SET
+        price=?,
+        updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).run(price, id);
 
-    if(!r.changes){
-
+    if (!r.changes) {
       return res.status(404).json({
-        error:"الموديل غير موجود"
+        error: "الموديل غير موجود"
       });
-
     }
 
     res.json(
       db.prepare(`
-        SELECT
-          id,
-          brand,
-          name,
-          storage,
-          ram,
-          price,
-          type
+        SELECT *
         FROM models
         WHERE id=?
       `).get(id)
     );
+  }
+);
 
+/* =========================
+   USED - MARK SOLD
+   متاح للموظف
+========================= */
+
+app.post(
+  "/api/models/:id/sold",
+  (req, res) => {
+
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({
+        error: "الجهاز غير صحيح"
+      });
+    }
+
+    const model =
+      db.prepare(`
+        SELECT *
+        FROM models
+        WHERE id=?
+      `).get(id);
+
+    if (!model) {
+      return res.status(404).json({
+        error: "الجهاز غير موجود"
+      });
+    }
+
+    if (model.type !== "used") {
+      return res.status(400).json({
+        error: "الخاصية للمستعمل فقط"
+      });
+    }
+
+    db.prepare(`
+      UPDATE models
+      SET
+        available=0,
+        sold_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).run(id);
+
+    res.json({
+      ok: true,
+      model: db.prepare(`
+        SELECT *
+        FROM models
+        WHERE id=?
+      `).get(id)
+    });
+  }
+);
+
+/* =========================
+   RESTORE USED MODEL
+   للمدير فقط
+========================= */
+
+app.post(
+  "/api/models/:id/available",
+  requireAdmin,
+  (req, res) => {
+
+    const id = Number(req.params.id);
+
+    const model =
+      db.prepare(`
+        SELECT *
+        FROM models
+        WHERE id=?
+      `).get(id);
+
+    if (!model) {
+      return res.status(404).json({
+        error: "الجهاز غير موجود"
+      });
+    }
+
+    if (model.type !== "used") {
+      return res.status(400).json({
+        error: "الخاصية للمستعمل فقط"
+      });
+    }
+
+    db.prepare(`
+      UPDATE models
+      SET
+        available=1,
+        sold_at=NULL
+      WHERE id=?
+    `).run(id);
+
+    res.json({
+      ok: true
+    });
   }
 );
 
@@ -629,28 +730,25 @@ app.put(
 app.delete(
   "/api/models/:id",
   requireAdmin,
-  (req,res)=>{
+  (req, res) => {
 
-    const id=
-      Number(req.params.id);
+    const id = Number(req.params.id);
 
-    const r=
-      db.prepare(
-        "DELETE FROM models WHERE id=?"
-      ).run(id);
+    const r =
+      db.prepare(`
+        DELETE FROM models
+        WHERE id=?
+      `).run(id);
 
-    if(!r.changes){
-
+    if (!r.changes) {
       return res.status(404).json({
-        error:"الموديل غير موجود"
+        error: "الموديل غير موجود"
       });
-
     }
 
     res.json({
-      ok:true
+      ok: true
     });
-
   }
 );
 
@@ -660,15 +758,11 @@ app.delete(
 
 app.use(
   express.static(
-    path.join(
-      __dirname,
-      "public"
-    )
+    path.join(__dirname, "public")
   )
 );
 
-app.get("*",(req,res)=>{
-
+app.get("*", (req, res) => {
   res.sendFile(
     path.join(
       __dirname,
@@ -676,18 +770,14 @@ app.get("*",(req,res)=>{
       "index.html"
     )
   );
-
 });
 
 /* =========================
    START
 ========================= */
 
-app.listen(
-  PORT,
-  ()=>{
-    console.log(
-      `iUsed running on port ${PORT}`
-    );
-  }
-);
+app.listen(PORT, () => {
+  console.log(
+    `iUsed running on port ${PORT}`
+  );
+});
