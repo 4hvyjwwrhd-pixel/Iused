@@ -31,8 +31,6 @@ CREATE TABLE IF NOT EXISTS models (
 );
 `);
 
-/* تحديث قواعد البيانات القديمة بدون حذف البيانات */
-
 let columns = db.prepare("PRAGMA table_info(models)").all();
 
 function addColumn(name, sql) {
@@ -80,31 +78,159 @@ function normalizeText(value) {
   return String(value || "")
     .trim()
     .toLowerCase()
+
+    /* شركات */
     .replace(/سامسونج/g, "samsung")
+    .replace(/هواوي/g, "huawei")
+    .replace(/هونر/g, "honor")
+    .replace(/honer/g, "honor")
+    .replace(/اوبو/g, "oppo")
+    .replace(/أوبو/g, "oppo")
+    .replace(/شاومي/g, "xiaomi")
+    .replace(/ريلمي/g, "realme")
+    .replace(/ريلمى/g, "realme")
+    .replace(/انفينكس/g, "infinix")
+    .replace(/انفينيكس/g, "infinix")
+    .replace(/تكنو/g, "tecno")
+    .replace(/نوكيا/g, "nokia")
+
+    /* كلمات شائعة */
     .replace(/جالاكسي/g, "galaxy")
     .replace(/\bgalaxy\b/g, "")
     .replace(/\bsamsung\b/g, "")
-    .replace(/[\s\-_.]+/g, "")
+
+    /* أخطاء واختصارات شائعة */
+    .replace(/\brino\b/g, "reno")
+    .replace(/\baltra\b/g, "ultra")
+    .replace(/\bnot\b/g, "note")
+    .replace(/\brd\b/g, "redmi")
+
+    .replace(/[\s\-_.+]+/g, "")
     .replace(/[^a-z0-9\u0600-\u06FF]/g, "");
 }
 
-function normalizeSpec(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/gb/g, "")
-    .replace(/tb/g, "000")
-    .replace(/\s/g, "")
-    .trim();
+function normalizeBrand(value) {
+  const raw = String(value || "").trim().toLowerCase();
+
+  if (/samsung|سامسونج/.test(raw)) return "samsung";
+  if (/oppo|اوبو|أوبو/.test(raw)) return "oppo";
+  if (/xiaomi|شاومي/.test(raw)) return "xiaomi";
+  if (/honor|honer|هونر/.test(raw)) return "honor";
+  if (/realme|ريلمي|ريلمى/.test(raw)) return "realme";
+  if (/infinix|انفينكس|انفينيكس/.test(raw)) return "infinix";
+  if (/tecno|تكنو/.test(raw)) return "tecno";
+  if (/nokia|نوكيا/.test(raw)) return "nokia";
+  if (/itel|ايتل/.test(raw)) return "itel";
+  if (/vivo|فيفو/.test(raw)) return "vivo";
+  if (/huawei|هواوي/.test(raw)) return "huawei";
+
+  return normalizeText(raw);
 }
 
-function modelKey(brand, name, storage, ram, type) {
-  return [
-    normalizeText(brand),
-    normalizeText(name),
-    normalizeSpec(storage),
-    normalizeSpec(ram),
+function normalizeSpec(value) {
+  let v = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+
+  if (!v) return "";
+
+  v = v.replace(/gb/g, "");
+
+  const tbMatch = v.match(/^(\d+(?:\.\d+)?)tb$/);
+
+  if (tbMatch) {
+    return String(
+      Math.round(Number(tbMatch[1]) * 1024)
+    );
+  }
+
+  return v.replace(/[^0-9.]/g, "");
+}
+
+function sameBasicModel(a, b) {
+  return (
+    normalizeBrand(a.brand) === normalizeBrand(b.brand) &&
+    normalizeText(a.name) === normalizeText(b.name) &&
+    a.type === b.type
+  );
+}
+
+/*
+  المطابقة الآمنة:
+  - الشركة + الموديل + النوع لازم يتطابقوا.
+  - لو RAM موجودة في القائمة الجديدة لازم تطابق القديمة.
+  - لو المساحة موجودة لازم تطابق القديمة.
+  - الخانة الفاضية لا تمنع المطابقة.
+  - لكن لا نحدث تلقائياً إلا لو وجدنا نتيجة واحدة فقط.
+*/
+
+function findExistingModel(brand, name, storage, ram, type) {
+
+  const incoming = {
+    brand,
+    name,
+    storage,
+    ram,
     type
-  ].join("|");
+  };
+
+  const candidates = db.prepare(`
+    SELECT *
+    FROM models
+    WHERE type=?
+  `).all(type).filter(x => {
+
+    if (!sameBasicModel(incoming, x)) {
+      return false;
+    }
+
+    const wantedStorage = normalizeSpec(storage);
+    const wantedRam = normalizeSpec(ram);
+
+    const oldStorage = normalizeSpec(x.storage);
+    const oldRam = normalizeSpec(x.ram);
+
+    if (
+      wantedStorage &&
+      oldStorage &&
+      wantedStorage !== oldStorage
+    ) {
+      return false;
+    }
+
+    if (
+      wantedRam &&
+      oldRam &&
+      wantedRam !== oldRam
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+
+  /*
+    لو فيه أكثر من احتمال،
+    نحاول إيجاد التطابق الكامل أولاً.
+  */
+
+  const exact = candidates.filter(x => {
+    return (
+      normalizeSpec(x.storage) === normalizeSpec(storage) &&
+      normalizeSpec(x.ram) === normalizeSpec(ram)
+    );
+  });
+
+  if (exact.length === 1) {
+    return exact[0];
+  }
+
+  return null;
 }
 
 /* =========================
@@ -133,6 +259,7 @@ app.use(
 ========================= */
 
 function requireAdmin(req, res, next) {
+
   if (!req.session.admin) {
     return res.status(401).json({
       error: "غير مصرح"
@@ -232,12 +359,18 @@ app.get("/api/models", (req, res) => {
 
   sql += `
     ORDER BY
-      CASE WHEN type='used' AND available=0 THEN 1 ELSE 0 END,
+      CASE
+        WHEN type='used' AND available=0
+        THEN 1
+        ELSE 0
+      END,
       price ASC,
       id ASC
   `;
 
-  res.json(db.prepare(sql).all(...params));
+  res.json(
+    db.prepare(sql).all(...params)
+  );
 });
 
 /* =========================
@@ -245,16 +378,20 @@ app.get("/api/models", (req, res) => {
 ========================= */
 
 app.get("/api/brands", (req, res) => {
+
   const rows = db.prepare(`
     SELECT DISTINCT brand
     FROM models
     ORDER BY brand
   `).all();
 
-  res.json(rows.map(x => x.brand));
+  res.json(
+    rows.map(x => x.brand)
+  );
 });
 
 app.get("/api/storages", (req, res) => {
+
   const rows = db.prepare(`
     SELECT DISTINCT storage
     FROM models
@@ -262,10 +399,13 @@ app.get("/api/storages", (req, res) => {
     ORDER BY CAST(storage AS INTEGER)
   `).all();
 
-  res.json(rows.map(x => x.storage));
+  res.json(
+    rows.map(x => x.storage)
+  );
 });
 
 app.get("/api/rams", (req, res) => {
+
   const rows = db.prepare(`
     SELECT DISTINCT ram
     FROM models
@@ -273,7 +413,9 @@ app.get("/api/rams", (req, res) => {
     ORDER BY CAST(ram AS INTEGER)
   `).all();
 
-  res.json(rows.map(x => x.ram));
+  res.json(
+    rows.map(x => x.ram)
+  );
 });
 
 /* =========================
@@ -282,7 +424,10 @@ app.get("/api/rams", (req, res) => {
 
 app.post("/api/login", (req, res) => {
 
-  if (req.body.password === ADMIN_PASSWORD) {
+  if (
+    req.body.password === ADMIN_PASSWORD
+  ) {
+
     req.session.admin = true;
 
     return res.json({
@@ -296,12 +441,16 @@ app.post("/api/login", (req, res) => {
 });
 
 app.post("/api/logout", (req, res) => {
+
   req.session.destroy(() => {
-    res.json({ ok: true });
+    res.json({
+      ok: true
+    });
   });
 });
 
 app.get("/api/me", (req, res) => {
+
   res.json({
     admin: !!req.session.admin
   });
@@ -316,50 +465,63 @@ app.post(
   requireAdmin,
   (req, res) => {
 
-    const brand = (req.body.brand || "").trim();
-    const name = (req.body.name || "").trim();
-    const storage = (req.body.storage || "").trim();
-    const ram = (req.body.ram || "").trim();
-    const price = Number(req.body.price);
+    const brand =
+      String(req.body.brand || "").trim();
+
+    const name =
+      String(req.body.name || "").trim();
+
+    const storage =
+      String(req.body.storage || "").trim();
+
+    const ram =
+      String(req.body.ram || "").trim();
+
+    const price =
+      Number(req.body.price);
 
     const type =
       req.body.type === "new"
         ? "new"
         : "used";
 
+    /*
+      RAM والمساحة أصبحوا اختياريين
+    */
+
     if (
       !brand ||
       !name ||
-      !storage ||
-      !ram ||
       !Number.isFinite(price) ||
       price <= 0
     ) {
+
       return res.status(400).json({
-        error: "أكمل بيانات الجهاز"
+        error: "اكتب الشركة والموديل والسعر"
       });
     }
 
-    const wantedKey =
-      modelKey(brand, name, storage, ram, type);
-
     const existing =
-      db.prepare(`
-        SELECT *
-        FROM models
-        WHERE type=?
-      `).all(type)
-      .find(x =>
-        modelKey(
-          x.brand,
-          x.name,
-          x.storage,
-          x.ram,
-          x.type
-        ) === wantedKey
+      findExistingModel(
+        brand,
+        name,
+        storage,
+        ram,
+        type
       );
 
     if (existing) {
+
+      /*
+        لو البيانات الجديدة ناقصة،
+        نحافظ على المواصفات القديمة.
+      */
+
+      const finalStorage =
+        storage || existing.storage || "";
+
+      const finalRam =
+        ram || existing.ram || "";
 
       db.prepare(`
         UPDATE models
@@ -376,8 +538,8 @@ app.post(
       `).run(
         brand,
         name,
-        storage,
-        ram,
+        finalStorage,
+        finalRam,
         price,
         existing.id
       );
@@ -415,6 +577,7 @@ app.post(
 
     res.json({
       added: true,
+
       model: db.prepare(`
         SELECT *
         FROM models
@@ -439,6 +602,7 @@ app.post(
         : [];
 
     if (!rows.length) {
+
       return res.status(400).json({
         error: "قائمة الأسعار فارغة"
       });
@@ -473,20 +637,23 @@ app.post(
               ? "used"
               : "new";
 
+          /*
+            RAM والمساحة اختياريين
+          */
+
           if (
             !brand ||
             !name ||
-            !storage ||
-            !ram ||
             !Number.isFinite(price) ||
             price <= 0
           ) {
+
             skipped++;
             continue;
           }
 
-          const wantedKey =
-            modelKey(
+          const existing =
+            findExistingModel(
               brand,
               name,
               storage,
@@ -494,25 +661,22 @@ app.post(
               type
             );
 
-          const possible =
-            db.prepare(`
-              SELECT *
-              FROM models
-              WHERE type=?
-            `).all(type);
-
-          const existing =
-            possible.find(x =>
-              modelKey(
-                x.brand,
-                x.name,
-                x.storage,
-                x.ram,
-                x.type
-              ) === wantedKey
-            );
-
           if (existing) {
+
+            /*
+              لا نمسح RAM أو المساحة القديمة
+              لو القائمة الجديدة تركتهم فارغين.
+            */
+
+            const finalStorage =
+              storage ||
+              existing.storage ||
+              "";
+
+            const finalRam =
+              ram ||
+              existing.ram ||
+              "";
 
             db.prepare(`
               UPDATE models
@@ -529,8 +693,8 @@ app.post(
             `).run(
               brand,
               name,
-              storage,
-              ram,
+              finalStorage,
+              finalRam,
               price,
               existing.id
             );
@@ -586,14 +750,18 @@ app.put(
   requireAdmin,
   (req, res) => {
 
-    const id = Number(req.params.id);
-    const price = Number(req.body.price);
+    const id =
+      Number(req.params.id);
+
+    const price =
+      Number(req.body.price);
 
     if (
       !Number.isInteger(id) ||
       !Number.isFinite(price) ||
       price <= 0
     ) {
+
       return res.status(400).json({
         error: "السعر غير صحيح"
       });
@@ -605,9 +773,13 @@ app.put(
         price=?,
         updated_at=CURRENT_TIMESTAMP
       WHERE id=?
-    `).run(price, id);
+    `).run(
+      price,
+      id
+    );
 
     if (!r.changes) {
+
       return res.status(404).json({
         error: "الموديل غير موجود"
       });
@@ -632,9 +804,13 @@ app.post(
   "/api/models/:id/sold",
   (req, res) => {
 
-    const id = Number(req.params.id);
+    const id =
+      Number(req.params.id);
 
-    if (!Number.isInteger(id)) {
+    if (
+      !Number.isInteger(id)
+    ) {
+
       return res.status(400).json({
         error: "الجهاز غير صحيح"
       });
@@ -648,12 +824,16 @@ app.post(
       `).get(id);
 
     if (!model) {
+
       return res.status(404).json({
         error: "الجهاز غير موجود"
       });
     }
 
-    if (model.type !== "used") {
+    if (
+      model.type !== "used"
+    ) {
+
       return res.status(400).json({
         error: "الخاصية للمستعمل فقط"
       });
@@ -669,6 +849,7 @@ app.post(
 
     res.json({
       ok: true,
+
       model: db.prepare(`
         SELECT *
         FROM models
@@ -688,7 +869,8 @@ app.post(
   requireAdmin,
   (req, res) => {
 
-    const id = Number(req.params.id);
+    const id =
+      Number(req.params.id);
 
     const model =
       db.prepare(`
@@ -698,12 +880,16 @@ app.post(
       `).get(id);
 
     if (!model) {
+
       return res.status(404).json({
         error: "الجهاز غير موجود"
       });
     }
 
-    if (model.type !== "used") {
+    if (
+      model.type !== "used"
+    ) {
+
       return res.status(400).json({
         error: "الخاصية للمستعمل فقط"
       });
@@ -732,7 +918,8 @@ app.delete(
   requireAdmin,
   (req, res) => {
 
-    const id = Number(req.params.id);
+    const id =
+      Number(req.params.id);
 
     const r =
       db.prepare(`
@@ -741,6 +928,7 @@ app.delete(
       `).run(id);
 
     if (!r.changes) {
+
       return res.status(404).json({
         error: "الموديل غير موجود"
       });
@@ -758,11 +946,15 @@ app.delete(
 
 app.use(
   express.static(
-    path.join(__dirname, "public")
+    path.join(
+      __dirname,
+      "public"
+    )
   )
 );
 
 app.get("*", (req, res) => {
+
   res.sendFile(
     path.join(
       __dirname,
@@ -777,6 +969,7 @@ app.get("*", (req, res) => {
 ========================= */
 
 app.listen(PORT, () => {
+
   console.log(
     `iUsed running on port ${PORT}`
   );
