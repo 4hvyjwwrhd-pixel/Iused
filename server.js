@@ -1,976 +1,1627 @@
 const express = require("express");
+
 const session = require("express-session");
-const Database = require("better-sqlite3");
+
+const { createClient } = require("@libsql/client");
+
 const path = require("path");
 
 const app = express();
+
 const PORT = process.env.PORT || 3000;
+
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "1234";
-const SESSION_SECRET = process.env.SESSION_SECRET || "change-this-secret";
 
-const db = new Database(path.join(__dirname, "iused.db"));
-db.pragma("journal_mode = WAL");
+const SESSION_SECRET =
 
-/* =========================
-   DATABASE
-========================= */
+  process.env.SESSION_SECRET || "change-this-secret";
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS models (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  brand TEXT NOT NULL,
-  name TEXT NOT NULL,
-  storage TEXT NOT NULL DEFAULT '',
-  ram TEXT NOT NULL DEFAULT '',
-  price INTEGER NOT NULL,
-  type TEXT NOT NULL DEFAULT 'used',
-  available INTEGER NOT NULL DEFAULT 1,
-  sold_at TEXT DEFAULT NULL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-`);
+if (
 
-let columns = db.prepare("PRAGMA table_info(models)").all();
+  !process.env.TURSO_DATABASE_URL ||
 
-function addColumn(name, sql) {
-  if (!columns.some(c => c.name === name)) {
-    db.exec(sql);
-    columns = db.prepare("PRAGMA table_info(models)").all();
-  }
+  !process.env.TURSO_AUTH_TOKEN
+
+) {
+
+  throw new Error(
+
+    "TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are required"
+
+  );
+
 }
 
-addColumn(
-  "type",
-  `ALTER TABLE models ADD COLUMN type TEXT NOT NULL DEFAULT 'used'`
-);
+const db = createClient({
 
-addColumn(
-  "storage",
-  `ALTER TABLE models ADD COLUMN storage TEXT NOT NULL DEFAULT ''`
-);
+  url: process.env.TURSO_DATABASE_URL,
 
-addColumn(
-  "ram",
-  `ALTER TABLE models ADD COLUMN ram TEXT NOT NULL DEFAULT ''`
-);
+  authToken: process.env.TURSO_AUTH_TOKEN
 
-addColumn(
-  "available",
-  `ALTER TABLE models ADD COLUMN available INTEGER NOT NULL DEFAULT 1`
-);
-
-addColumn(
-  "sold_at",
-  `ALTER TABLE models ADD COLUMN sold_at TEXT DEFAULT NULL`
-);
-
-addColumn(
-  "updated_at",
-  `ALTER TABLE models ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP`
-);
+});
 
 /* =========================
-   NORMALIZATION
+
+   HELPERS
+
 ========================= */
 
 function normalizeText(value) {
+
   return String(value || "")
+
     .trim()
+
     .toLowerCase()
 
-    /* شركات */
     .replace(/سامسونج/g, "samsung")
+
     .replace(/هواوي/g, "huawei")
-    .replace(/هونر/g, "honor")
-    .replace(/honer/g, "honor")
-    .replace(/اوبو/g, "oppo")
-    .replace(/أوبو/g, "oppo")
+
+    .replace(/هونر|honer/g, "honor")
+
+    .replace(/اوبو|أوبو/g, "oppo")
+
     .replace(/شاومي/g, "xiaomi")
-    .replace(/ريلمي/g, "realme")
-    .replace(/ريلمى/g, "realme")
-    .replace(/انفينكس/g, "infinix")
-    .replace(/انفينيكس/g, "infinix")
+
+    .replace(/ريلمي|ريلمى/g, "realme")
+
+    .replace(/انفينكس|انفينيكس/g, "infinix")
+
     .replace(/تكنو/g, "tecno")
+
     .replace(/نوكيا/g, "nokia")
 
-    /* كلمات شائعة */
     .replace(/جالاكسي/g, "galaxy")
+
     .replace(/\bgalaxy\b/g, "")
+
     .replace(/\bsamsung\b/g, "")
 
-    /* أخطاء واختصارات شائعة */
     .replace(/\brino\b/g, "reno")
+
     .replace(/\baltra\b/g, "ultra")
+
     .replace(/\bnot\b/g, "note")
+
     .replace(/\brd\b/g, "redmi")
 
     .replace(/[\s\-_.+]+/g, "")
+
     .replace(/[^a-z0-9\u0600-\u06FF]/g, "");
+
 }
 
 function normalizeBrand(value) {
+
   const raw = String(value || "").trim().toLowerCase();
 
-  if (/samsung|سامسونج/.test(raw)) return "samsung";
-  if (/oppo|اوبو|أوبو/.test(raw)) return "oppo";
-  if (/xiaomi|شاومي/.test(raw)) return "xiaomi";
-  if (/honor|honer|هونر/.test(raw)) return "honor";
-  if (/realme|ريلمي|ريلمى/.test(raw)) return "realme";
-  if (/infinix|انفينكس|انفينيكس/.test(raw)) return "infinix";
-  if (/tecno|تكنو/.test(raw)) return "tecno";
-  if (/nokia|نوكيا/.test(raw)) return "nokia";
-  if (/itel|ايتل/.test(raw)) return "itel";
-  if (/vivo|فيفو/.test(raw)) return "vivo";
-  if (/huawei|هواوي/.test(raw)) return "huawei";
+  const brands = [
+
+    ["samsung", /samsung|سامسونج/],
+
+    ["oppo", /oppo|اوبو|أوبو/],
+
+    ["xiaomi", /xiaomi|شاومي/],
+
+    ["honor", /honor|honer|هونر/],
+
+    ["realme", /realme|ريلمي|ريلمى/],
+
+    ["infinix", /infinix|انفينكس|انفينيكس/],
+
+    ["tecno", /tecno|تكنو/],
+
+    ["nokia", /nokia|نوكيا/],
+
+    ["itel", /itel|ايتل/],
+
+    ["vivo", /vivo|فيفو/],
+
+    ["huawei", /huawei|هواوي/]
+
+  ];
+
+  for (const [brand, pattern] of brands) {
+
+    if (pattern.test(raw)) return brand;
+
+  }
 
   return normalizeText(raw);
+
 }
 
 function normalizeSpec(value) {
+
   let v = String(value || "")
+
     .trim()
+
     .toLowerCase()
-    .replace(/\s+/g, "");
+
+    .replace(/\s+/g, "")
+
+    .replace(/gb/g, "");
 
   if (!v) return "";
 
-  v = v.replace(/gb/g, "");
+  const tb = v.match(/^(\d+(?:\.\d+)?)tb$/);
 
-  const tbMatch = v.match(/^(\d+(?:\.\d+)?)tb$/);
+  if (tb) {
 
-  if (tbMatch) {
     return String(
-      Math.round(Number(tbMatch[1]) * 1024)
+
+      Math.round(Number(tb[1]) * 1024)
+
     );
+
   }
 
   return v.replace(/[^0-9.]/g, "");
+
 }
 
 function sameBasicModel(a, b) {
+
   return (
+
     normalizeBrand(a.brand) === normalizeBrand(b.brand) &&
+
     normalizeText(a.name) === normalizeText(b.name) &&
+
     a.type === b.type
+
   );
+
 }
 
-/*
-  المطابقة الآمنة:
-  - الشركة + الموديل + النوع لازم يتطابقوا.
-  - لو RAM موجودة في القائمة الجديدة لازم تطابق القديمة.
-  - لو المساحة موجودة لازم تطابق القديمة.
-  - الخانة الفاضية لا تمنع المطابقة.
-  - لكن لا نحدث تلقائياً إلا لو وجدنا نتيجة واحدة فقط.
-*/
+function findExistingModel(
 
-function findExistingModel(brand, name, storage, ram, type) {
+  rows,
+
+  brand,
+
+  name,
+
+  storage,
+
+  ram,
+
+  type
+
+) {
 
   const incoming = {
+
     brand,
+
     name,
+
     storage,
+
     ram,
+
     type
+
   };
 
-  const candidates = db.prepare(`
-    SELECT *
-    FROM models
-    WHERE type=?
-  `).all(type).filter(x => {
+  const candidates = rows.filter(x => {
 
     if (!sameBasicModel(incoming, x)) {
+
       return false;
+
     }
 
     const wantedStorage = normalizeSpec(storage);
+
     const wantedRam = normalizeSpec(ram);
 
     const oldStorage = normalizeSpec(x.storage);
+
     const oldRam = normalizeSpec(x.ram);
 
     if (
+
       wantedStorage &&
+
       oldStorage &&
+
       wantedStorage !== oldStorage
+
     ) {
+
       return false;
+
     }
 
     if (
+
       wantedRam &&
+
       oldRam &&
+
       wantedRam !== oldRam
+
     ) {
+
       return false;
+
     }
 
     return true;
+
   });
 
   if (candidates.length === 1) {
+
     return candidates[0];
+
   }
 
-  /*
-    لو فيه أكثر من احتمال،
-    نحاول إيجاد التطابق الكامل أولاً.
-  */
+  const exact = candidates.filter(x =>
 
-  const exact = candidates.filter(x => {
-    return (
-      normalizeSpec(x.storage) === normalizeSpec(storage) &&
-      normalizeSpec(x.ram) === normalizeSpec(ram)
-    );
-  });
+    normalizeSpec(x.storage) === normalizeSpec(storage) &&
 
-  if (exact.length === 1) {
-    return exact[0];
-  }
+    normalizeSpec(x.ram) === normalizeSpec(ram)
 
-  return null;
+  );
+
+  return exact.length === 1 ? exact[0] : null;
+
+}
+
+function rowsOf(result) {
+
+  return (result.rows || []).map(x => ({ ...x }));
+
+}
+
+async function all(sql, args = []) {
+
+  return rowsOf(
+
+    await db.execute({
+
+      sql,
+
+      args
+
+    })
+
+  );
+
+}
+
+async function one(sql, args = []) {
+
+  return (await all(sql, args))[0] || null;
+
+}
+
+function parseModel(item, defaultType = "used") {
+
+  return {
+
+    brand: String(item.brand || "").trim(),
+
+    name: String(item.name || "").trim(),
+
+    storage: String(item.storage || "").trim(),
+
+    ram: String(item.ram || "").trim(),
+
+    price: Number(item.price),
+
+    type:
+
+      item.type === "new"
+
+        ? "new"
+
+        : item.type === "used"
+
+        ? "used"
+
+        : defaultType
+
+  };
+
+}
+
+function validModel(model) {
+
+  return (
+
+    model.brand &&
+
+    model.name &&
+
+    Number.isSafeInteger(model.price) &&
+
+    model.price > 0
+
+  );
+
 }
 
 /* =========================
+
    EXPRESS
+
 ========================= */
 
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.set("trust proxy", 1);
 
 app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-      maxAge: 8 * 60 * 60 * 1000
-    }
+
+  express.json({
+
+    limit: "2mb"
+
   })
+
 );
 
-/* =========================
-   ADMIN
-========================= */
+app.use(
+
+  express.urlencoded({
+
+    extended: true
+
+  })
+
+);
+
+app.use(
+
+  session({
+
+    secret: SESSION_SECRET,
+
+    resave: false,
+
+    saveUninitialized: false,
+
+    cookie: {
+
+      httpOnly: true,
+
+      sameSite: "lax",
+
+      secure: "auto",
+
+      maxAge: 8 * 60 * 60 * 1000
+
+    }
+
+  })
+
+);
 
 function requireAdmin(req, res, next) {
 
   if (!req.session.admin) {
+
     return res.status(401).json({
+
       error: "غير مصرح"
+
     });
+
   }
 
   next();
+
+}
+
+const route = fn => (req, res, next) =>
+
+  Promise.resolve(
+
+    fn(req, res, next)
+
+  ).catch(next);
+
+/* =========================
+
+   LOGIN
+
+========================= */
+
+app.post(
+
+  "/api/login",
+
+  (req, res, next) => {
+
+    if (
+
+      req.body.password !== ADMIN_PASSWORD
+
+    ) {
+
+      return res.status(401).json({
+
+        error: "الرقم السري غير صحيح"
+
+      });
+
+    }
+
+    req.session.regenerate(error => {
+
+      if (error) return next(error);
+
+      req.session.admin = true;
+
+      req.session.save(error => {
+
+        if (error) return next(error);
+
+        res.json({
+
+          ok: true
+
+        });
+
+      });
+
+    });
+
+  }
+
+);
+
+app.post(
+
+  "/api/logout",
+
+  (req, res, next) => {
+
+    req.session.destroy(error => {
+
+      if (error) return next(error);
+
+      res.json({
+
+        ok: true
+
+      });
+
+    });
+
+  }
+
+);
+
+app.get(
+
+  "/api/me",
+
+  (req, res) => {
+
+    res.json({
+
+      admin: !!req.session.admin
+
+    });
+
+  }
+
+);
+
+/* =========================
+
+   SEARCH
+
+========================= */
+
+app.get(
+
+  "/api/models",
+
+  route(async (req, res) => {
+
+    let sql = "SELECT * FROM models";
+
+    const where = [];
+
+    const args = [];
+
+    const q =
+
+      String(req.query.q || "").trim();
+
+    if (q) {
+
+      where.push(`
+
+        (
+
+          lower(name) LIKE lower(?)
+
+          OR lower(brand) LIKE lower(?)
+
+        )
+
+      `);
+
+      args.push(
+
+        `%${q}%`,
+
+        `%${q}%`
+
+      );
+
+    }
+
+    for (
+
+      const field of [
+
+        "brand",
+
+        "storage",
+
+        "ram"
+
+      ]
+
+    ) {
+
+      const value =
+
+        String(
+
+          req.query[field] || ""
+
+        ).trim();
+
+      if (value) {
+
+        where.push(`${field}=?`);
+
+        args.push(value);
+
+      }
+
+    }
+
+    if (
+
+      ["used", "new"].includes(
+
+        req.query.type
+
+      )
+
+    ) {
+
+      where.push("type=?");
+
+      args.push(req.query.type);
+
+    }
+
+    if (
+
+      req.query.minPrice !== undefined &&
+
+      req.query.minPrice !== ""
+
+    ) {
+
+      const value =
+
+        Number(req.query.minPrice);
+
+      if (Number.isFinite(value)) {
+
+        where.push("price>=?");
+
+        args.push(value);
+
+      }
+
+    }
+
+    if (
+
+      req.query.maxPrice !== undefined &&
+
+      req.query.maxPrice !== ""
+
+    ) {
+
+      const value =
+
+        Number(req.query.maxPrice);
+
+      if (Number.isFinite(value)) {
+
+        where.push("price<=?");
+
+        args.push(value);
+
+      }
+
+    }
+
+    if (where.length) {
+
+      sql +=
+
+        " WHERE " +
+
+        where.join(" AND ");
+
+    }
+
+    sql += `
+
+      ORDER BY
+
+        CASE
+
+          WHEN type='used'
+
+          AND available=0
+
+          THEN 1
+
+          ELSE 0
+
+        END,
+
+        price ASC,
+
+        id ASC
+
+    `;
+
+    res.json(
+
+      await all(sql, args)
+
+    );
+
+  })
+
+);
+
+/* =========================
+
+   FILTERS
+
+========================= */
+
+for (
+
+  const [endpoint, field]
+
+  of [
+
+    ["brands", "brand"],
+
+    ["storages", "storage"],
+
+    ["rams", "ram"]
+
+  ]
+
+) {
+
+  app.get(
+
+    "/api/" + endpoint,
+
+    route(async (req, res) => {
+
+      const sql =
+
+        `SELECT DISTINCT ${field}
+
+         FROM models ` +
+
+        (
+
+          field === "brand"
+
+            ? ""
+
+            : `WHERE ${field}<>''`
+
+        );
+
+      const values =
+
+        (await all(sql))
+
+          .map(x => x[field]);
+
+      values.sort(
+
+        field === "brand"
+
+          ? (a, b) =>
+
+              String(a)
+
+                .localeCompare(String(b))
+
+          : (a, b) =>
+
+              (Number(normalizeSpec(a)) || 0) -
+
+              (Number(normalizeSpec(b)) || 0)
+
+      );
+
+      res.json(values);
+
+    })
+
+  );
+
 }
 
 /* =========================
-   MODELS SEARCH
+
+   SAVE MODEL
+
 ========================= */
 
-app.get("/api/models", (req, res) => {
+async function saveModel(model) {
 
-  const q = (req.query.q || "").trim();
-  const brand = (req.query.brand || "").trim();
-  const type = (req.query.type || "").trim();
-  const storage = (req.query.storage || "").trim();
-  const ram = (req.query.ram || "").trim();
+  const rows =
 
-  const minPrice =
-    req.query.minPrice !== undefined &&
-    req.query.minPrice !== ""
-      ? Number(req.query.minPrice)
-      : null;
+    await all(
 
-  const maxPrice =
-    req.query.maxPrice !== undefined &&
-    req.query.maxPrice !== ""
-      ? Number(req.query.maxPrice)
-      : null;
+      "SELECT * FROM models WHERE type=?",
 
-  let sql = `
-    SELECT
-      id,
-      brand,
-      name,
-      storage,
-      ram,
-      price,
-      type,
-      available,
-      sold_at,
-      created_at,
-      updated_at
-    FROM models
-  `;
+      [model.type]
 
-  const where = [];
-  const params = [];
+    );
 
-  if (q) {
-    where.push(`
-      (
-        lower(name) LIKE lower(?)
-        OR lower(brand) LIKE lower(?)
-      )
-    `);
+  const existing =
 
-    params.push(`%${q}%`, `%${q}%`);
-  }
+    findExistingModel(
 
-  if (brand) {
-    where.push("brand=?");
-    params.push(brand);
-  }
+      rows,
 
-  if (type === "used" || type === "new") {
-    where.push("type=?");
-    params.push(type);
-  }
+      model.brand,
 
-  if (storage) {
-    where.push("storage=?");
-    params.push(storage);
-  }
+      model.name,
 
-  if (ram) {
-    where.push("ram=?");
-    params.push(ram);
-  }
+      model.storage,
 
-  if (Number.isFinite(minPrice)) {
-    where.push("price>=?");
-    params.push(minPrice);
-  }
+      model.ram,
 
-  if (Number.isFinite(maxPrice)) {
-    where.push("price<=?");
-    params.push(maxPrice);
-  }
+      model.type
 
-  if (where.length) {
-    sql += " WHERE " + where.join(" AND ");
-  }
+    );
 
-  sql += `
-    ORDER BY
-      CASE
-        WHEN type='used' AND available=0
-        THEN 1
-        ELSE 0
-      END,
-      price ASC,
-      id ASC
-  `;
-
-  res.json(
-    db.prepare(sql).all(...params)
-  );
-});
-
-/* =========================
-   FILTER DATA
-========================= */
-
-app.get("/api/brands", (req, res) => {
-
-  const rows = db.prepare(`
-    SELECT DISTINCT brand
-    FROM models
-    ORDER BY brand
-  `).all();
-
-  res.json(
-    rows.map(x => x.brand)
-  );
-});
-
-app.get("/api/storages", (req, res) => {
-
-  const rows = db.prepare(`
-    SELECT DISTINCT storage
-    FROM models
-    WHERE storage <> ''
-    ORDER BY CAST(storage AS INTEGER)
-  `).all();
-
-  res.json(
-    rows.map(x => x.storage)
-  );
-});
-
-app.get("/api/rams", (req, res) => {
-
-  const rows = db.prepare(`
-    SELECT DISTINCT ram
-    FROM models
-    WHERE ram <> ''
-    ORDER BY CAST(ram AS INTEGER)
-  `).all();
-
-  res.json(
-    rows.map(x => x.ram)
-  );
-});
-
-/* =========================
-   LOGIN
-========================= */
-
-app.post("/api/login", (req, res) => {
-
-  if (
-    req.body.password === ADMIN_PASSWORD
-  ) {
-
-    req.session.admin = true;
-
-    return res.json({
-      ok: true
-    });
-  }
-
-  res.status(401).json({
-    error: "الرقم السري غير صحيح"
-  });
-});
-
-app.post("/api/logout", (req, res) => {
-
-  req.session.destroy(() => {
-    res.json({
-      ok: true
-    });
-  });
-});
-
-app.get("/api/me", (req, res) => {
-
-  res.json({
-    admin: !!req.session.admin
-  });
-});
-
-/* =========================
-   ADD ONE MODEL
-========================= */
-
-app.post(
-  "/api/models",
-  requireAdmin,
-  (req, res) => {
-
-    const brand =
-      String(req.body.brand || "").trim();
-
-    const name =
-      String(req.body.name || "").trim();
+  if (existing) {
 
     const storage =
-      String(req.body.storage || "").trim();
+
+      model.storage ||
+
+      existing.storage ||
+
+      "";
 
     const ram =
-      String(req.body.ram || "").trim();
 
-    const price =
-      Number(req.body.price);
+      model.ram ||
 
-    const type =
-      req.body.type === "new"
-        ? "new"
-        : "used";
+      existing.ram ||
 
-    /*
-      RAM والمساحة أصبحوا اختياريين
-    */
+      "";
 
-    if (
-      !brand ||
-      !name ||
-      !Number.isFinite(price) ||
-      price <= 0
-    ) {
+    await db.execute({
 
-      return res.status(400).json({
-        error: "اكتب الشركة والموديل والسعر"
-      });
-    }
+      sql: `
 
-    const existing =
-      findExistingModel(
-        brand,
-        name,
-        storage,
-        ram,
-        type
-      );
-
-    if (existing) {
-
-      /*
-        لو البيانات الجديدة ناقصة،
-        نحافظ على المواصفات القديمة.
-      */
-
-      const finalStorage =
-        storage || existing.storage || "";
-
-      const finalRam =
-        ram || existing.ram || "";
-
-      db.prepare(`
         UPDATE models
+
         SET
+
           brand=?,
+
           name=?,
+
           storage=?,
+
           ram=?,
+
           price=?,
+
           available=1,
+
           sold_at=NULL,
+
           updated_at=CURRENT_TIMESTAMP
+
         WHERE id=?
-      `).run(
-        brand,
-        name,
-        finalStorage,
-        finalRam,
-        price,
-        existing.id
-      );
 
-      return res.json({
-        updated: true,
-        model: db.prepare(`
-          SELECT *
-          FROM models
-          WHERE id=?
-        `).get(existing.id)
-      });
-    }
+      `,
 
-    const r = db.prepare(`
-      INSERT INTO models
-      (
-        brand,
-        name,
+      args: [
+
+        model.brand,
+
+        model.name,
+
         storage,
+
         ram,
-        price,
-        type,
-        available
-      )
-      VALUES (?,?,?,?,?,?,1)
-    `).run(
-      brand,
-      name,
-      storage,
-      ram,
-      price,
-      type
-    );
 
-    res.json({
-      added: true,
+        model.price,
 
-      model: db.prepare(`
-        SELECT *
-        FROM models
-        WHERE id=?
-      `).get(r.lastInsertRowid)
+        existing.id
+
+      ]
+
     });
+
+    return {
+
+      updated: true,
+
+      model:
+
+        await one(
+
+          "SELECT * FROM models WHERE id=?",
+
+          [existing.id]
+
+        )
+
+    };
+
   }
-);
+
+  const result =
+
+    await db.execute({
+
+      sql: `
+
+        INSERT INTO models
+
+        (
+
+          brand,
+
+          name,
+
+          storage,
+
+          ram,
+
+          price,
+
+          type,
+
+          available
+
+        )
+
+        VALUES (?,?,?,?,?,?,1)
+
+      `,
+
+      args: [
+
+        model.brand,
+
+        model.name,
+
+        model.storage,
+
+        model.ram,
+
+        model.price,
+
+        model.type
+
+      ]
+
+    });
+
+  return {
+
+    added: true,
+
+    model:
+
+      await one(
+
+        "SELECT * FROM models WHERE id=?",
+
+        [Number(result.lastInsertRowid)]
+
+      )
+
+  };
+
+}
 
 /* =========================
-   BULK PRICE LIST
+
+   ADD ONE
+
 ========================= */
 
 app.post(
-  "/api/models/bulk",
+
+  "/api/models",
+
   requireAdmin,
-  (req, res) => {
 
-    const rows =
-      Array.isArray(req.body.models)
-        ? req.body.models
-        : [];
+  route(async (req, res) => {
 
-    if (!rows.length) {
+    const model =
+
+      parseModel(
+
+        req.body,
+
+        "used"
+
+      );
+
+    if (!validModel(model)) {
 
       return res.status(400).json({
-        error: "قائمة الأسعار فارغة"
-      });
-    }
 
-    let added = 0;
-    let updated = 0;
-    let skipped = 0;
+        error:
 
-    const transaction =
-      db.transaction(items => {
+          "اكتب الشركة والموديل والسعر"
 
-        for (const item of items) {
-
-          const brand =
-            String(item.brand || "").trim();
-
-          const name =
-            String(item.name || "").trim();
-
-          const storage =
-            String(item.storage || "").trim();
-
-          const ram =
-            String(item.ram || "").trim();
-
-          const price =
-            Number(item.price);
-
-          const type =
-            item.type === "used"
-              ? "used"
-              : "new";
-
-          /*
-            RAM والمساحة اختياريين
-          */
-
-          if (
-            !brand ||
-            !name ||
-            !Number.isFinite(price) ||
-            price <= 0
-          ) {
-
-            skipped++;
-            continue;
-          }
-
-          const existing =
-            findExistingModel(
-              brand,
-              name,
-              storage,
-              ram,
-              type
-            );
-
-          if (existing) {
-
-            /*
-              لا نمسح RAM أو المساحة القديمة
-              لو القائمة الجديدة تركتهم فارغين.
-            */
-
-            const finalStorage =
-              storage ||
-              existing.storage ||
-              "";
-
-            const finalRam =
-              ram ||
-              existing.ram ||
-              "";
-
-            db.prepare(`
-              UPDATE models
-              SET
-                brand=?,
-                name=?,
-                storage=?,
-                ram=?,
-                price=?,
-                available=1,
-                sold_at=NULL,
-                updated_at=CURRENT_TIMESTAMP
-              WHERE id=?
-            `).run(
-              brand,
-              name,
-              finalStorage,
-              finalRam,
-              price,
-              existing.id
-            );
-
-            updated++;
-
-          } else {
-
-            db.prepare(`
-              INSERT INTO models
-              (
-                brand,
-                name,
-                storage,
-                ram,
-                price,
-                type,
-                available
-              )
-              VALUES (?,?,?,?,?,?,1)
-            `).run(
-              brand,
-              name,
-              storage,
-              ram,
-              price,
-              type
-            );
-
-            added++;
-          }
-        }
       });
 
-    transaction(rows);
-
-    res.json({
-      ok: true,
-      added,
-      updated,
-      skipped,
-      total: rows.length
-    });
-  }
-);
-
-/* =========================
-   UPDATE PRICE
-========================= */
-
-app.put(
-  "/api/models/:id",
-  requireAdmin,
-  (req, res) => {
-
-    const id =
-      Number(req.params.id);
-
-    const price =
-      Number(req.body.price);
-
-    if (
-      !Number.isInteger(id) ||
-      !Number.isFinite(price) ||
-      price <= 0
-    ) {
-
-      return res.status(400).json({
-        error: "السعر غير صحيح"
-      });
-    }
-
-    const r = db.prepare(`
-      UPDATE models
-      SET
-        price=?,
-        updated_at=CURRENT_TIMESTAMP
-      WHERE id=?
-    `).run(
-      price,
-      id
-    );
-
-    if (!r.changes) {
-
-      return res.status(404).json({
-        error: "الموديل غير موجود"
-      });
     }
 
     res.json(
-      db.prepare(`
-        SELECT *
-        FROM models
-        WHERE id=?
-      `).get(id)
+
+      await saveModel(model)
+
     );
-  }
+
+  })
+
 );
 
 /* =========================
-   USED - MARK SOLD
-   متاح للموظف
+
+   BULK
+
 ========================= */
 
 app.post(
-  "/api/models/:id/sold",
-  (req, res) => {
 
-    const id =
-      Number(req.params.id);
+  "/api/models/bulk",
 
-    if (
-      !Number.isInteger(id)
-    ) {
+  requireAdmin,
 
-      return res.status(400).json({
-        error: "الجهاز غير صحيح"
-      });
-    }
+  route(async (req, res) => {
 
-    const model =
-      db.prepare(`
-        SELECT *
-        FROM models
-        WHERE id=?
-      `).get(id);
+    const items =
 
-    if (!model) {
+      Array.isArray(req.body.models)
 
-      return res.status(404).json({
-        error: "الجهاز غير موجود"
-      });
-    }
+        ? req.body.models
 
-    if (
-      model.type !== "used"
-    ) {
+        : [];
+
+    if (!items.length) {
 
       return res.status(400).json({
-        error: "الخاصية للمستعمل فقط"
+
+        error:
+
+          "قائمة الأسعار فارغة"
+
       });
+
     }
 
-    db.prepare(`
-      UPDATE models
-      SET
-        available=0,
-        sold_at=CURRENT_TIMESTAMP
-      WHERE id=?
-    `).run(id);
+    let added = 0;
+
+    let updated = 0;
+
+    let skipped = 0;
+
+    for (const item of items) {
+
+      const model =
+
+        parseModel(
+
+          item,
+
+          "new"
+
+        );
+
+      if (!validModel(model)) {
+
+        skipped++;
+
+        continue;
+
+      }
+
+      const result =
+
+        await saveModel(model);
+
+      if (result.updated) {
+
+        updated++;
+
+      } else {
+
+        added++;
+
+      }
+
+    }
 
     res.json({
+
       ok: true,
 
-      model: db.prepare(`
-        SELECT *
-        FROM models
-        WHERE id=?
-      `).get(id)
+      added,
+
+      updated,
+
+      skipped,
+
+      total: items.length
+
     });
-  }
+
+  })
+
 );
 
 /* =========================
-   RESTORE USED MODEL
-   للمدير فقط
+
+   UPDATE PRICE
+
+========================= */
+
+app.put(
+
+  "/api/models/:id",
+
+  requireAdmin,
+
+  route(async (req, res) => {
+
+    const id =
+
+      Number(req.params.id);
+
+    const price =
+
+      Number(req.body.price);
+
+    if (
+
+      !Number.isInteger(id) ||
+
+      !Number.isSafeInteger(price) ||
+
+      price <= 0
+
+    ) {
+
+      return res.status(400).json({
+
+        error: "السعر غير صحيح"
+
+      });
+
+    }
+
+    const old =
+
+      await one(
+
+        "SELECT id FROM models WHERE id=?",
+
+        [id]
+
+      );
+
+    if (!old) {
+
+      return res.status(404).json({
+
+        error:
+
+          "الموديل غير موجود"
+
+      });
+
+    }
+
+    await db.execute({
+
+      sql: `
+
+        UPDATE models
+
+        SET
+
+          price=?,
+
+          updated_at=CURRENT_TIMESTAMP
+
+        WHERE id=?
+
+      `,
+
+      args: [
+
+        price,
+
+        id
+
+      ]
+
+    });
+
+    res.json(
+
+      await one(
+
+        "SELECT * FROM models WHERE id=?",
+
+        [id]
+
+      )
+
+    );
+
+  })
+
+);
+
+/* =========================
+
+   SOLD
+
 ========================= */
 
 app.post(
-  "/api/models/:id/available",
-  requireAdmin,
-  (req, res) => {
+
+  "/api/models/:id/sold",
+
+  route(async (req, res) => {
 
     const id =
+
       Number(req.params.id);
 
     const model =
-      db.prepare(`
-        SELECT *
-        FROM models
-        WHERE id=?
-      `).get(id);
+
+      await one(
+
+        "SELECT * FROM models WHERE id=?",
+
+        [id]
+
+      );
 
     if (!model) {
 
       return res.status(404).json({
-        error: "الجهاز غير موجود"
+
+        error:
+
+          "الجهاز غير موجود"
+
       });
+
     }
 
-    if (
-      model.type !== "used"
-    ) {
+    if (model.type !== "used") {
 
       return res.status(400).json({
-        error: "الخاصية للمستعمل فقط"
+
+        error:
+
+          "الخاصية للمستعمل فقط"
+
       });
+
     }
 
-    db.prepare(`
-      UPDATE models
-      SET
-        available=1,
-        sold_at=NULL
-      WHERE id=?
-    `).run(id);
+    await db.execute({
+
+      sql: `
+
+        UPDATE models
+
+        SET
+
+          available=0,
+
+          sold_at=CURRENT_TIMESTAMP
+
+        WHERE id=?
+
+      `,
+
+      args: [id]
+
+    });
 
     res.json({
-      ok: true
+
+      ok: true,
+
+      model:
+
+        await one(
+
+          "SELECT * FROM models WHERE id=?",
+
+          [id]
+
+        )
+
     });
-  }
+
+  })
+
 );
 
 /* =========================
-   DELETE MODEL
+
+   RESTORE USED
+
+========================= */
+
+app.post(
+
+  "/api/models/:id/available",
+
+  requireAdmin,
+
+  route(async (req, res) => {
+
+    const id =
+
+      Number(req.params.id);
+
+    const model =
+
+      await one(
+
+        "SELECT * FROM models WHERE id=?",
+
+        [id]
+
+      );
+
+    if (!model) {
+
+      return res.status(404).json({
+
+        error:
+
+          "الجهاز غير موجود"
+
+      });
+
+    }
+
+    if (model.type !== "used") {
+
+      return res.status(400).json({
+
+        error:
+
+          "الخاصية للمستعمل فقط"
+
+      });
+
+    }
+
+    await db.execute({
+
+      sql: `
+
+        UPDATE models
+
+        SET
+
+          available=1,
+
+          sold_at=NULL
+
+        WHERE id=?
+
+      `,
+
+      args: [id]
+
+    });
+
+    res.json({
+
+      ok: true
+
+    });
+
+  })
+
+);
+
+/* =========================
+
+   DELETE
+
 ========================= */
 
 app.delete(
+
   "/api/models/:id",
+
   requireAdmin,
-  (req, res) => {
+
+  route(async (req, res) => {
 
     const id =
+
       Number(req.params.id);
 
-    const r =
-      db.prepare(`
-        DELETE FROM models
-        WHERE id=?
-      `).run(id);
+    const model =
 
-    if (!r.changes) {
+      await one(
+
+        "SELECT id FROM models WHERE id=?",
+
+        [id]
+
+      );
+
+    if (!model) {
 
       return res.status(404).json({
-        error: "الموديل غير موجود"
+
+        error:
+
+          "الموديل غير موجود"
+
       });
+
     }
 
-    res.json({
-      ok: true
+    await db.execute({
+
+      sql:
+
+        "DELETE FROM models WHERE id=?",
+
+      args: [id]
+
     });
-  }
+
+    res.json({
+
+      ok: true
+
+    });
+
+  })
+
 );
 
 /* =========================
+
+   HEALTH
+
+========================= */
+
+app.get(
+
+  "/api/health",
+
+  route(async (req, res) => {
+
+    await db.execute("SELECT 1");
+
+    res.json({
+
+      ok: true,
+
+      database: "turso"
+
+    });
+
+  })
+
+);
+
+/* =========================
+
    WEBSITE
+
 ========================= */
 
 app.use(
-  express.static(
-    path.join(
-      __dirname,
-      "public"
-    )
-  )
+
+  "/api",
+
+  (req, res) => {
+
+    res.status(404).json({
+
+      error:
+
+        "المسار غير موجود"
+
+    });
+
+  }
+
 );
 
-app.get("*", (req, res) => {
+app.use(
 
-  res.sendFile(
+  express.static(
+
     path.join(
+
       __dirname,
-      "public",
-      "index.html"
+
+      "public"
+
     )
-  );
-});
+
+  )
+
+);
+
+app.use(
+
+  (req, res, next) => {
+
+    if (req.method !== "GET") {
+
+      return next();
+
+    }
+
+    res.sendFile(
+
+      path.join(
+
+        __dirname,
+
+        "public",
+
+        "index.html"
+
+      )
+
+    );
+
+  }
+
+);
 
 /* =========================
-   START
+
+   ERROR
+
 ========================= */
 
-app.listen(PORT, () => {
+app.use(
 
-  console.log(
-    `iUsed running on port ${PORT}`
+  (error, req, res, next) => {
+
+    console.error(error);
+
+    if (res.headersSent) {
+
+      return next(error);
+
+    }
+
+    res.status(503).json({
+
+      error:
+
+        "تعذر الوصول لقاعدة البيانات"
+
+    });
+
+  }
+
+);
+
+/* =========================
+
+   START
+
+========================= */
+
+async function start() {
+
+  await db.execute(`
+
+    CREATE TABLE IF NOT EXISTS models (
+
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+      brand TEXT NOT NULL,
+
+      name TEXT NOT NULL,
+
+      storage TEXT NOT NULL DEFAULT '',
+
+      ram TEXT NOT NULL DEFAULT '',
+
+      price INTEGER NOT NULL,
+
+      type TEXT NOT NULL DEFAULT 'used',
+
+      available INTEGER NOT NULL DEFAULT 1,
+
+      sold_at TEXT DEFAULT NULL,
+
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+
+    )
+
+  `);
+
+  app.listen(
+
+    PORT,
+
+    () => {
+
+      console.log(
+
+        "iUsed running on port " +
+
+        PORT +
+
+        " (Turso)"
+
+      );
+
+    }
+
   );
+
+}
+
+start().catch(error => {
+
+  console.error(
+
+    "iUsed startup failed:",
+
+    error
+
+  );
+
+  process.exit(1);
+
 });
