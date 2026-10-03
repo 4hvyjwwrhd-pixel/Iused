@@ -2,13 +2,13 @@
   "name": "iused-online",
   "version": "1.0.0",
   "private": true,
-  "description": "iUsed online mobile pricing system",
+  "description": "iUsed online mobile pricing system with Turso",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "better-sqlite3": "^12.4.1",
+    "@libsql/client": "^0.15.15",
     "express": "^4.21.2",
     "express-session": "^1.18.1"
   }
